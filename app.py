@@ -106,3 +106,66 @@ def init_db():
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
+
+@app.route('/')
+def index():
+    if 'user_id' in session:
+        if session['role'] == 'admin':
+            return redirect(url_for('admin_dashboard'))
+        else:
+            return redirect(url_for('user_dashboard'))
+    return render_template('index.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']  # Changed from username to email
+        password = hash_password(request.form['password'])
+
+        conn = get_db_connection()
+        user = conn.execute(
+            'SELECT * FROM users WHERE email = ? AND password = ?',  # Changed to email
+            (email, password)
+        ).fetchone()
+        conn.close()
+
+        if user:
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+            session['role'] = user['role']
+            session['full_name'] = user['full_name']
+
+            if user['role'] == 'admin':
+                return redirect(url_for('admin_dashboard'))
+            else:
+                return redirect(url_for('user_dashboard'))
+        else:
+            flash('Invalid email or password', 'error')
+
+    return render_template('login.html')
+
+@app.route('/register', methods=['GET','POST'])
+def register():
+    if request.method == 'POST':
+        full_name = request.form['full_name'].strip()
+        username  = request.form['username'].strip()
+        email     = request.form['email'].strip()
+        address   = request.form['address'].strip()
+        pin_code  = request.form['pin_code'].strip()
+        password  = hash_password(request.form['password'])
+        
+        try:
+            conn = get_db_connection()
+            conn.execute('''
+                INSERT INTO users
+                  (full_name, username, email, password, address, pin_code)
+                VALUES (?,?,?,?,?,?)
+            ''', (full_name, username, email, password, address, pin_code))
+            conn.commit()
+            flash('Registered! Please login.', 'success')
+            return redirect(url_for('login'))
+        except sqlite3.IntegrityError:
+            flash('Username or email already exists', 'error')
+        finally:
+            conn.close()
+    return render_template('register.html')
