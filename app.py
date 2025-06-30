@@ -1,9 +1,14 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
+from app import app as flask_app 
 import sqlite3
 import hashlib
 from datetime import datetime
 import os
 from functools import wraps
+
+
+def handler(environ, start_response):
+    return flask_app(environ, start_response)
 
 def admin_required(f):
     @wraps(f)
