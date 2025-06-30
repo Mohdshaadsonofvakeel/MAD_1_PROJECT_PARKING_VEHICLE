@@ -247,6 +247,10 @@ def admin_lots():
     conn.close()
 
     return render_template('admin_lots.html', lots=lots)
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('index'))
 
 @app.route('/admin/add_lot', methods=['GET', 'POST'])
 def add_lot():
