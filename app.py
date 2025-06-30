@@ -183,7 +183,7 @@ def admin_dashboard():
     available_spots = total_spots - occupied_spots
     total_users = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'user'").fetchone()['count']
 
-
+# Milestone-VP Cost-Calculation
     revenue_data = conn.execute('''
         SELECT pl.name, pl.price_per_hour,
                COUNT(r.id) as total_bookings,
