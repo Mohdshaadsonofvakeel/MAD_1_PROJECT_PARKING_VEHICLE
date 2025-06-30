@@ -205,7 +205,7 @@ def admin_dashboard():
             'percentage': percentage
         })
 
-   
+   #commit Milestone-VP Summary-Users-Admin
     recent_reservations = conn.execute('''
         SELECT r.*, u.full_name, u.username, pl.name as lot_name, ps.spot_number
         FROM reservations r
