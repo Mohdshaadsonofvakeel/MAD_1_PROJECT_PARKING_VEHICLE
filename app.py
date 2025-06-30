@@ -546,3 +546,226 @@ def admin_users():
     ''').fetchall()
     conn.close()
     return render_template('admin_users.html', users=users)
+
+@app.route('/user')
+def user_dashboard():
+    if 'user_id' not in session or session['role'] != 'user':
+        flash('Access denied', 'error')
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+
+    
+    active_reservation = conn.execute('''
+        SELECT r.*, pl.name as lot_name, pl.address, pl.price_per_hour,
+               ps.spot_number, ps.id as spot_id
+        FROM reservations r
+        JOIN parking_lots pl ON r.lot_id = pl.id
+        JOIN parking_spots ps ON r.spot_id = ps.id
+        WHERE r.user_id = ? AND r.status = 'active'
+    ''', (session['user_id'],)).fetchone()
+
+    
+    all_reservations = conn.execute('''
+        SELECT r.*, pl.name as lot_name, ps.spot_number, pl.price_per_hour
+        FROM reservations r
+        JOIN parking_lots pl ON r.lot_id = pl.id
+        JOIN parking_spots ps ON r.spot_id = ps.id
+        WHERE r.user_id = ?
+        ORDER BY r.check_in_time DESC
+        LIMIT 20
+    ''', (session['user_id'],)).fetchall()
+
+ 
+    parking_summary = conn.execute('''
+        SELECT 
+            COUNT(*) as total_bookings,
+            COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_bookings,
+            COUNT(CASE WHEN status = 'active' THEN 1 END) as active_bookings,
+            COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled_bookings,
+            COALESCE(SUM(total_cost), 0) as total_spent
+        FROM reservations
+        WHERE user_id = ?
+    ''', (session['user_id'],)).fetchone()
+
+ 
+    if parking_summary and parking_summary['total_bookings'] > 0:
+        parking_summary = dict(parking_summary)
+        parking_summary['completed_percentage'] = (parking_summary['completed_bookings'] / parking_summary['total_bookings']) * 100
+        parking_summary['active_percentage'] = (parking_summary['active_bookings'] / parking_summary['total_bookings']) * 100
+        parking_summary['cancelled_percentage'] = (parking_summary['cancelled_bookings'] / parking_summary['total_bookings']) * 100
+    else:
+        parking_summary = None
+
+
+    available_lots = conn.execute('''
+        SELECT pl.*, 
+               COUNT(ps.id) as total_spots,
+               COUNT(CASE WHEN ps.status = 'available' THEN 1 END) as available_spots
+        FROM parking_lots pl
+        LEFT JOIN parking_spots ps ON pl.id = ps.lot_id
+        GROUP BY pl.id
+        HAVING available_spots > 0
+        ORDER BY pl.name
+    ''').fetchall()
+
+    conn.close()
+
+
+    active_reservation = dict(active_reservation) if active_reservation else None
+    all_reservations = [dict(r) for r in all_reservations]
+    available_lots = [dict(l) for l in available_lots]
+
+    return render_template('user_dashboard.html', 
+                         active_reservation=active_reservation,
+                         all_reservations=all_reservations,
+                         parking_summary=parking_summary,
+                         available_lots=available_lots)
+
+
+@app.route('/release_parking/<int:reservation_id>')
+def release_parking_form(reservation_id):
+    if 'user_id' not in session or session['role'] != 'user':
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+
+ 
+    reservation = conn.execute('''
+        SELECT r.*, pl.name as lot_name, pl.price_per_hour, ps.spot_number
+        FROM reservations r
+        JOIN parking_lots pl ON r.lot_id = pl.id
+        JOIN parking_spots ps ON r.spot_id = ps.id
+        WHERE r.id = ? AND r.user_id = ? AND r.status = 'active'
+    ''', (reservation_id, session['user_id'])).fetchone()
+
+    if not reservation:
+        flash('Reservation not found', 'error')
+        conn.close()
+        return redirect(url_for('user_dashboard'))
+
+
+    check_in = datetime.fromisoformat(reservation['check_in_time'])
+    now = datetime.now()
+    duration = now - check_in
+    duration_hours = max(1, int(duration.total_seconds() / 3600))
+    estimated_cost = duration_hours * reservation['price_per_hour']
+
+    conn.close()
+
+    return render_template('release_parking_form.html', 
+                         reservation=dict(reservation),
+                         duration_hours=duration_hours,
+                         estimated_cost=estimated_cost)
+
+
+@app.route('/release_spot/<int:reservation_id>', methods=['POST'])
+def release_spot(reservation_id):
+    if 'user_id' not in session or session['role'] != 'user':
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+
+
+    reservation = conn.execute('''
+        SELECT r.*, pl.price_per_hour
+        FROM reservations r
+        JOIN parking_lots pl ON r.lot_id = pl.id
+        WHERE r.id = ? AND r.user_id = ? AND r.status = "active"
+    ''', (reservation_id, session['user_id'])).fetchone()
+
+    if not reservation:
+        flash('Reservation not found', 'error')
+        conn.close()
+        return redirect(url_for('user_dashboard'))
+
+    check_in = datetime.fromisoformat(reservation['check_in_time'])
+    check_out = datetime.now()
+    duration = check_out - check_in
+    duration_hours = max(1, int(duration.total_seconds() / 3600))
+    total_cost = duration_hours * reservation['price_per_hour']
+
+
+    conn.execute(
+        'UPDATE reservations SET check_out_time = ?, total_cost = ?, status = "completed" WHERE id = ?',
+        (check_out, total_cost, reservation_id)
+    )
+
+    # Free the spot
+    conn.execute(
+        'UPDATE parking_spots SET status = "available" WHERE id = ?',
+        (reservation['spot_id'],)
+    )
+
+    conn.commit()
+    conn.close()
+
+    flash(f'Parking spot released successfully! Total cost: ₹{total_cost:.2f}', 'success')
+    return redirect(url_for('user_dashboard'))
+
+@app.route('/book_spot/<int:lot_id>')
+def book_spot(lot_id):
+    if 'user_id' not in session or session['role'] != 'user':
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+
+
+    existing = conn.execute(
+        'SELECT id FROM reservations WHERE user_id = ? AND status = "active"',
+        (session['user_id'],)
+    ).fetchone()
+
+    if existing:
+        flash('You already have an active reservation', 'error')
+        conn.close()
+        return redirect(url_for('user_dashboard'))
+
+
+    available_spot = conn.execute(
+        'SELECT id FROM parking_spots WHERE lot_id = ? AND status = "available" ORDER BY spot_number LIMIT 1',
+        (lot_id,)
+    ).fetchone()
+
+    if not available_spot:
+        flash('No available spots in this lot', 'error')
+        conn.close()
+        return redirect(url_for('user_dashboard'))
+
+
+    spot_id = available_spot['id']
+    check_in_time = datetime.now()
+
+    conn.execute(
+        'INSERT INTO reservations (user_id, spot_id, lot_id, check_in_time, status) VALUES (?, ?, ?, ?, ?)',
+        (session['user_id'], spot_id, lot_id, check_in_time, 'active')
+    )
+
+    conn.execute(
+        'UPDATE parking_spots SET status = "occupied" WHERE id = ?',
+        (spot_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    flash('Parking spot booked successfully!', 'success')
+    return redirect(url_for('user_dashboard'))
+
+@app.route('/reserve_parking_history')
+def reserve_parking_history():
+    if 'user_id' not in session or session['role'] != 'user':
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+    reservations = conn.execute('''
+        SELECT r.*, pl.name as lot_name, ps.spot_number
+        FROM reservations r
+        JOIN parking_lots pl ON r.lot_id = pl.id
+        JOIN parking_spots ps ON r.spot_id = ps.id
+        WHERE r.user_id = ?
+        ORDER BY r.check_in_time DESC
+    ''', (session['user_id'],)).fetchall()
+    conn.close()
+
+    return render_template('reserve_parking_history.html', reservations=[dict(r) for r in reservations])
