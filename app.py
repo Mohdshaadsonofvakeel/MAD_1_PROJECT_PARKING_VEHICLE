@@ -773,3 +773,35 @@ def reserve_parking_history():
     conn.close()
 
     return render_template('reserve_parking_history.html', reservations=[dict(r) for r in reservations])
+@app.route('/search', methods=['GET', 'POST'])
+def search():
+    if 'user_id' not in session or session['role'] != 'admin':
+        return redirect(url_for('login'))
+
+    results = []
+    search_term = ''
+
+    if request.method == 'POST':
+        search_term = request.form['search_term']
+        conn = get_db_connection()
+
+        # Search users
+        users = conn.execute(
+            'SELECT "user" as type, username, full_name as name, email FROM users WHERE username LIKE ? OR full_name LIKE ? OR email LIKE ?',
+            (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%')
+        ).fetchall()
+
+        # Search lots
+        lots = conn.execute(
+            'SELECT "lot" as type, name, address, pin_code FROM parking_lots WHERE name LIKE ? OR address LIKE ? OR pin_code LIKE ?',
+            (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%')
+        ).fetchall()
+
+        results = list(users) + list(lots)
+        conn.close()
+
+    return render_template('search.html', results=results, search_term=search_term)
+
+if __name__ == '__main__':
+    init_db()
+    app.run(debug=True)
