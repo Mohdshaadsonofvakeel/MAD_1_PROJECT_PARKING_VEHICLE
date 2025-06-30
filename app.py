@@ -445,3 +445,104 @@ def view_profile():
         return redirect(url_for('logout'))
     
     return render_template('profile.html', user=dict(user))
+
+@app.route('/edit_profile', methods=['GET', 'POST'])
+def edit_profile():
+    if 'user_id' not in session:
+        flash('Please login to edit your profile', 'error')
+        return redirect(url_for('login'))
+    
+    conn = get_db_connection()
+    
+    if request.method == 'POST':
+        # Get form data
+        full_name = request.form.get('full_name', '').strip()
+        email = request.form.get('email', '').strip()
+        username = request.form.get('username', '').strip()
+        address = request.form.get('address', '').strip()
+        pin_code = request.form.get('pin_code', '').strip()
+        current_password = request.form.get('current_password', '').strip()
+        new_password = request.form.get('new_password', '').strip()
+        confirm_password = request.form.get('confirm_password', '').strip()
+        
+        
+        if not all([full_name, email, username, address, pin_code]):
+            flash('Please fill in all required fields', 'error')
+            return redirect(url_for('edit_profile'))
+        
+       
+        user = conn.execute(
+            'SELECT * FROM users WHERE id = ?',
+            (session['user_id'],)
+        ).fetchone()
+        
+ 
+        if new_password:
+            if not current_password:
+                flash('Current password is required to set a new password', 'error')
+                return redirect(url_for('edit_profile'))
+            
+            if hash_password(current_password) != user['password']:
+                flash('Current password is incorrect', 'error')
+                return redirect(url_for('edit_profile'))
+            
+            if new_password != confirm_password:
+                flash('New passwords do not match', 'error')
+                return redirect(url_for('edit_profile'))
+            
+            if len(new_password) < 6:
+                flash('New password must be at least 6 characters long', 'error')
+                return redirect(url_for('edit_profile'))
+        
+        try:
+
+            if new_password:
+                
+                conn.execute('''
+                    UPDATE users 
+                    SET full_name = ?, email = ?, username = ?, password = ?, address = ?, pin_code = ?
+                    WHERE id = ?
+                ''', (full_name, email, username, hash_password(new_password), address, pin_code, session['user_id']))
+                flash('Profile and password updated successfully!', 'success')
+            else:
+                
+                conn.execute('''
+                    UPDATE users 
+                    SET full_name = ?, email = ?, username = ?, address = ?, pin_code = ?
+                    WHERE id = ?
+                ''', (full_name, email, username, address, pin_code, session['user_id']))
+                flash('Profile updated successfully!', 'success')
+            
+            conn.commit()
+            
+            
+            session['username'] = username
+            session['full_name'] = full_name
+            
+            return redirect(url_for('view_profile'))
+            
+        except sqlite3.IntegrityError:
+            flash('Email or username already exists', 'error')
+        except Exception as e:
+            flash('An error occurred while updating your profile', 'error')
+    
+    user = conn.execute(
+        'SELECT * FROM users WHERE id = ?',
+        (session['user_id'],)
+    ).fetchone()
+    conn.close()
+    
+    return render_template('edit_profile.html', user=dict(user))
+
+@app.route('/admin/users')
+@admin_required
+def admin_users():
+    conn = get_db_connection()
+    users = conn.execute('''
+        SELECT id, full_name, username, email, address, pin_code, created_at
+        FROM users
+        WHERE role='user'
+        ORDER BY created_at DESC
+    ''').fetchall()
+    conn.close()
+    return render_template('admin_users.html', users=users)
